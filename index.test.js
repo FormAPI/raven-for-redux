@@ -12,7 +12,12 @@ Raven.config(
   "https://5d5bf17b1bed4afc9103b5a09634775e@sentry.io/146969"
 ).install();
 
-const reducer = (previousState = { value: 0 }, action) => {
+const defaultState = { value: 0 };
+const context = {
+  initialState: defaultState
+};
+
+const reducer = (previousState = context.initialState, action) => {
   switch (action.type) {
     case "THROW":
       // Raven does not seem to be able to capture global exceptions in Jest tests.
@@ -29,12 +34,11 @@ const reducer = (previousState = { value: 0 }, action) => {
   }
 };
 
-const context = {};
-
 describe("raven-for-redux", () => {
   beforeEach(() => {
     stringifyMocked.mockImplementation(obj => stringify(obj));
     context.mockTransport = jest.fn();
+    context.initialState = defaultState;
     Raven.setTransport(context.mockTransport);
     Raven.setDataCallback(undefined);
     Raven.setBreadcrumbCallback(undefined);
@@ -193,7 +197,6 @@ describe("raven-for-redux", () => {
         userData
       );
     });
-
     ["captureException", "captureMessage"].forEach(fnName => {
       it(`skips state for ${fnName} if request would be larger than 200000B`, () => {
         expect(Raven._globalOptions.transport).toEqual(context.mockTransport);
@@ -252,6 +255,93 @@ describe("raven-for-redux", () => {
           state: "Failed to submit state to Sentry: 413 request too large.",
           lastAction: undefined
         });
+      });
+    });
+    describe("with redux-undo history as top-level state", () => {
+      beforeEach(() => {
+        context.initialState = {
+          past: [{ value: 2 }, { value: 1 }],
+          present: { value: 0 },
+          future: [],
+          index: 2,
+          limit: 2
+        };
+        context.store = createStore(
+          reducer,
+          applyMiddleware(context.middleware)
+        );
+      });
+      it("replaces the past and future arrays in the state", () => {
+        expect(() => {
+          context.store.dispatch({ type: "THROW" });
+        }).toThrow();
+
+        expect(context.mockTransport).toHaveBeenCalledTimes(1);
+        const { extra } = context.mockTransport.mock.calls[0][0].data;
+        expect(extra.state).toEqual({
+          past: "redux-undo history was automatically removed. (Entries: 2)",
+          present: { value: 0 },
+          future: "redux-undo history was automatically removed. (Entries: 0)",
+          index: 2,
+          limit: 2
+        });
+      });
+    });
+    describe("with redux-undo history as nested stores", () => {
+      beforeEach(() => {
+        context.initialState = {
+          fooStore: {
+            past: [{ value: 2 }, { value: 1 }],
+            present: { value: 0 },
+            future: [],
+            index: 2,
+            limit: 2
+          },
+          barStore: {
+            value: 2
+          }
+        };
+        context.store = createStore(
+          reducer,
+          applyMiddleware(context.middleware)
+        );
+      });
+      it("replaces past and future arrays in any nested stores that use redux-undo", () => {
+        expect(() => {
+          context.store.dispatch({ type: "THROW" });
+        }).toThrow();
+        expect(context.mockTransport).toHaveBeenCalledTimes(1);
+        const { extra } = context.mockTransport.mock.calls[0][0].data;
+        expect(extra.state).toEqual({
+          fooStore: {
+            past: "redux-undo history was automatically removed. (Entries: 2)",
+            present: { value: 0 },
+            future:
+              "redux-undo history was automatically removed. (Entries: 0)",
+            index: 2,
+            limit: 2
+          },
+          barStore: {
+            value: 2
+          }
+        });
+      });
+    });
+    describe("with state that is not an object", () => {
+      beforeEach(() => {
+        context.initialState = 42;
+        context.store = createStore(
+          reducer,
+          applyMiddleware(context.middleware)
+        );
+      });
+      it("does not affect the state", () => {
+        expect(() => {
+          context.store.dispatch({ type: "THROW" });
+        }).toThrow();
+        expect(context.mockTransport).toHaveBeenCalledTimes(1);
+        const { extra } = context.mockTransport.mock.calls[0][0].data;
+        expect(extra.state).toEqual(42);
       });
     });
   });
